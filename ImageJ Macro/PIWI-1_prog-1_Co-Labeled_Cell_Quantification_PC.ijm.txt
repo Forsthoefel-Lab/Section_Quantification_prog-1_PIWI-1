@@ -1,0 +1,201 @@
+macro "PIWI-1_prog-1_Co-Labeled_Cell_Quantification" {
+
+// PC version
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	// Notes:
+	//
+	// 1 - Macro was developed on Windows 10 OS; some adaptation may be required for MacOS or other operating systems
+	//   - this includes unhashing the setOption("JFileChooser", true); command to display directory chooser dialog
+	//   - and converting all "\" and "\\" in filename paths to "/" and "//"
+	// 2 - Macro was developed for 16-bit .czi images captured on a Zeiss AxioObserver.Z1 with ApoTome.2 and experiment-specific exposure times
+	//   - Optimization of File renaming, DAPI mask signal cutoff (100), Auto Local Threshold, Analyze Particles (2-20 um radius), and other parameters may be necessary for other experiments
+	// 3 - DAPI is blue; prog-1 is red; PIWI-1 is far-red (pseudocolor to green)
+	// 4 - This macro flips images vertically prior to further analysis (original images oriented with ventral at top) (noted below)
+	// 5 - Some images have four channels; green channel is closed prior to analysis if present (noted below)
+	//  
+	// General workflow:
+	//
+	//   - before starting macro, tick "Autoscale" and "Split channels" options in Bio-Formats Import Options Window 
+	//
+	// 1 - choose input directory at prompt
+	// 2 - choose output directory at prompt
+	// 3 - manually select "Split Channels" in file importer, -OR- enable the "Split Channels" command below, but not both
+	// 4 - when prompted, click near the edge of a section to outline it (for total area calculation)
+	// 5 - macro will cycle through all images in the input directory, and output data and analysis images in the output directory
+	// 6 - use R script to summarize output data
+	//
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+	// Macro starts here!
+
+	// Set up Directories
+
+	//setOption("JFileChooser", true); // Required to display directory chooser dialog on MacOS
+
+	dir1 = getDirectory("Choose INPUT Directory for all INPUT .czi files."); // Location of all .czi files.
+	dir_output = getDirectory("Choose OUTPUT Directory for all output files."); // Location where all the output will go.
+	list = getFileList(dir1);
+
+	// Set up Options
+	setOption("BlackBackground", false); // Ensures that the default option is a white background 
+	
+	// Start loop for all images in INPUT directory
+	for (j=0; j<list.length; j++) {
+		showProgress(j+1, list.length);
+		filename = dir1 + list[j];
+ 		open(filename);
+
+		// Reset the Redirection of the set measurements
+		run("Set Measurements...", "area mean perimeter shape feret's integrated display redirect=None decimal=3"); // sets up the measurements to redirect to the original CHANNEL 2 (red) 16-bit image.
+
+		// Set up names and folders, specific for each file, hence why this is inside the loop
+		base_name = getTitle(); // EX) "1_to_5.tif"
+ 		base_name = substring(base_name,0,indexOf(base_name, "-Apo")); // removes -Apo and everything after it (sometimes excess title text gets created by ImageJ)
+		my_save_dir = dir_output;
+ 		my_csv_dir = dir_output + "\\csv";
+
+ 		if (!File.exists(my_csv_dir)) { // This check will avoid overwriting an existing csv directory
+			File.makeDirectory(my_csv_dir);  
+ 		}
+ 		
+		// Image names and file paths:
+		mask1 = my_save_dir + "\\" + base_name + "_mask1.tif";
+		dapi_particles = my_save_dir + "\\" + base_name + "_DAPI_particles.tif";		
+		composite_image = my_save_dir + "\\" + base_name + "_composite.tif";
+		composite_image_flat = my_save_dir + "\\" + base_name + "_composite_flat.tif";
+
+		// ROI file paths:
+		section_area = my_save_dir + "\\" + base_name + "_section_area.roi"; // section_area is a variable that I can refer back to later
+
+		// Results names and file paths:
+		area = my_csv_dir + "\\" + base_name + "_section_area.csv";
+		results_dapi = my_csv_dir + "\\" + base_name + "_DAPI_data.csv";		
+		results_red = my_csv_dir + "\\" + base_name + "_RED_data.csv";
+		results_PIWI = my_csv_dir + "\\" + base_name + "_PIWI_data.csv";
+
+		// Image processing starts here:
+		// This block selects section area and apply the area to the DAPI image and save the section area in micron sq
+		// Each image is flipped vertically so dorsal is at top
+		// If four channels are present, green channel is closed before subsequent steps
+
+		if (nImages == 4) {
+			selectImage(3); // this closes green channel if present
+			close();
+		}
+		
+		selectImage(1); // ImageJ imageID is 1-based
+		dapi_name = getTitle();
+		run("Flip Vertically");
+		selectImage(2);
+		red_name = getTitle();
+		run("Flip Vertically");
+		selectImage(3);
+		PIWI_name = getTitle();
+		run("Flip Vertically");
+		selectImage(3);
+		run("Duplicate...", "duplicate");
+		setThreshold(100, 65535); // this action will create an 8-bit image
+		setTool("wand");
+		waitForUser("ask user to click on the section near the edge"); // to create an outline of the tissue section
+		run("ROI Manager..."); 
+		roiManager("Add");
+		roiManager("Measure");
+		roiManager("Select", 0);
+		roiManager("Rename", "section_area"); // roiManager("Select", "section_area");
+		roiManager("Save", section_area);
+		saveAs("Results", area);
+		run("Clear Results");
+		close(); // close this image window for subsequent composite image stack creation
+		// end of block
+		
+		// Create a merged 8-bit image from dapi and red channels for local thresholding and count number of particles
+		selectImage(1); // I need to be able to select the dapi channel image
+		run("Duplicate...", "duplicate"); // by default the duplicated image will be selected
+		setOption("ScaleConversions", true);
+		run("8-bit");
+		// run("Brightness/Contrast...");
+		setMinAndMax(0, 100);
+		duplicated_dapi = getTitle(); // getTitle will automatically select the duplicated image
+		selectImage(2); // I need to be able to select the red channel image
+		run("Duplicate...", "duplicate"); // by default the duplicated image will be selected
+		setOption("ScaleConversions", true);
+		run("8-bit");
+		duplicated_red = getTitle();
+		run("Merge Channels...", "c1=["+duplicated_red+"] c3=["+duplicated_dapi+"] create");
+		run("RGB Color");
+		selectImage(nImages-1);
+		close();
+		selectImage(nImages);
+		run("8-bit");
+		roiManager("Select", "section_area");
+		run("Clear Outside");
+		run("Auto Local Threshold", "method=Phansalkar radius=15 parameter_1=0 parameter_2=0");
+		run("Dilate");
+		run("Watershed");
+		masked_image = getTitle();
+	
+		run("Analyze Particles...", "size=12-1256 show=Masks exclude"); // radius of particles from 2-20 um
+		saveAs("Tiff", mask1); // this saves the 8-bit masked image with its base name
+		selectImage(masked_image); // close tif file containing the area with mask for dapi_red channels
+		close();
+
+		// This block directs the dapi_red mask to dapi 16-bit image to get measurements of the individual particles
+		// Make sure the mask1.tiff image is selected
+		run("Set Measurements...", "area mean perimeter shape feret's integrated display redirect=["+dapi_name+"] decimal=3"); // sets up the measurements to redirect to the original DAPI 16-bit image.
+		run("Analyze Particles...", "size=12-1256 show=Outlines display exclude clear");
+		saveAs("Results", results_dapi);
+		selectImage(nImages);
+		saveAs("Tiff", dapi_particles);
+		// close(); //do not close this image window for subsequent composite image stack creation
+
+		// This block directs the dapi_red mask to the red channel 16-bit image to get measurements of the riboprobe (red) signal/particles
+		selectWindow(base_name + "_mask1.tif"); // Make sure the mask1.tiff image is selected
+		run("Set Measurements...", "area mean perimeter shape feret's integrated display redirect=["+red_name+"] decimal=3"); // sets up the measurements to redirect to the original red 16-bit image.
+		run("Analyze Particles...", "size=12-1256 show=Outlines display exclude clear");
+		saveAs("Results", results_red);
+		close(); // close this image window for subsequent composite image stack creation
+
+		// This block directs the dapi_red mask to the PIWI channel 16-bit image to get measurements of the PIWI (green) signal/particles
+		selectWindow(base_name + "_mask1.tif"); // Make sure the mask1.tiff image is selected
+		run("Set Measurements...", "area mean perimeter shape feret's integrated display redirect=["+PIWI_name+"] decimal=3"); // sets up the measurements to redirect to the original PIWI 16-bit image.
+		run("Analyze Particles...", "size=12-1256 show=Outlines display exclude clear");
+		saveAs("Results", results_PIWI);
+		close();
+		run("Close"); // closes all non-image windows
+
+		// Create composite image
+		// Need to close all images except original DAPI, channels, and the "DAPI_particles" image
+		selectWindow(base_name + "_DAPI_particles.tif"); // Make sure the dapi_particles.tiff image is selected to outline particles in yellow 
+		run("Yellow");
+		run("Invert LUT");
+		// selectImage(nImages);
+	
+		run("Images to Stack", "name=Stack title=[] use");
+		run("Make Composite", "display=Composite");
+		Stack.setDisplayMode("color");
+		Stack.setChannel(1);
+		run("Blue");
+		Stack.setChannel(2);
+		run("Magenta");
+		Stack.setChannel(3);
+		run("Green");
+		Stack.setChannel(4);
+		
+		Stack.setDisplayMode("composite"); // test to make sure this line works probably
+		saveAs("Tiff", composite_image);
+		run("Flatten");
+		saveAs("Tiff", composite_image_flat);
+		
+		run("Clear Results");
+		while(nImages>0) {
+			selectImage(nImages);
+			close();
+		}
+	
+		close("ROI Manager");
+		close("Summary");
+		close("Results");
+
+	} //end of for loop
+} //end of whole macro
